@@ -1,0 +1,59 @@
+name: SEC Filing Download
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: Ticker symbol to download, for example AMD
+        required: true
+        default: AMD
+        type: string
+      form:
+        description: SEC form to download
+        required: true
+        default: 10-K
+        type: choice
+        options:
+          - 10-K
+          - 10-Q
+          - 8-K
+      latest:
+        description: Number of newest filings to download; currently only 1 is supported
+        required: true
+        default: '1'
+        type: choice
+        options:
+          - '1'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    env:
+      SEC_USER_AGENT_EMAIL: ${{ secrets.SEC_USER_AGENT_EMAIL }}
+      SEC_USER_AGENT_NAME: ${{ secrets.SEC_USER_AGENT_NAME }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Download SEC filing
+        run: |
+          uv run python -m financial_research_agent.sec download \
+            --ticker "${{ inputs.ticker }}" \
+            --form "${{ inputs.form }}" \
+            --latest "${{ inputs.latest }}" \
+            --output data/sec
+
+      - name: Upload downloaded filing
+        uses: actions/upload-artifact@v4
+        with:
+          name: sec-filing-${{ inputs.ticker }}-${{ inputs.form }}
+          path: data/sec/**
+          if-no-files-found: error

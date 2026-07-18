@@ -11,7 +11,7 @@ from financial_research_agent.sec_client import DEFAULT_OUTPUT_DIR, SecClient, c
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
     parser = argparse.ArgumentParser(
-        description="Download the latest 10-K and 10-Q SEC filings for a ticker."
+        description="Download the latest 10-K, 10-Q, and 8-K SEC filings for a ticker."
     )
     parser.add_argument("ticker", help="Ticker symbol, for example AAPL.")
     parser.add_argument(
