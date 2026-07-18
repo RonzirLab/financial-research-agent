@@ -242,6 +242,7 @@ class SecClientTest(unittest.TestCase):
             return FakeResponse(request.full_url, b'{"ok": true}')
 
         with patch.dict("os.environ", {}, clear=True):
+            expected_user_agent = build_sec_user_agent("YOUR_EMAIL@example.com")
             with tempfile.TemporaryDirectory() as temporary_directory:
                 transport = UrllibTransport(
                     "YOUR_EMAIL@example.com",
@@ -255,7 +256,7 @@ class SecClientTest(unittest.TestCase):
 
         self.assertEqual(len(requests), 1)
         headers = dict(requests[0][0].header_items())
-        self.assertEqual(headers["User-agent"], build_sec_user_agent("YOUR_EMAIL@example.com"))
+        self.assertEqual(headers["User-agent"], expected_user_agent)
         self.assertEqual(headers["Accept-encoding"], "gzip, deflate")
         self.assertEqual(headers["Accept"], "application/json,text/html")
 
