@@ -1,0 +1,33 @@
+name: SEC Live Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sec-live-check:
+    runs-on: ubuntu-latest
+    env:
+      SEC_USER_AGENT_EMAIL: ${{ secrets.SEC_USER_AGENT_EMAIL }}
+      SEC_USER_AGENT_NAME: ${{ secrets.SEC_USER_AGENT_NAME }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run AMD SEC live check
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_file="$(mktemp)"
+          uv run python scripts/sec_live_check.py | tee "$output_file"
+
+          grep -Fx "HTTP status code: 200" "$output_file" >/dev/null
+          grep -Fx "Valid JSON received: True" "$output_file" >/dev/null
+          grep -Eix "Company name returned: (AMD|ADVANCED MICRO DEVICES INC|ADVANCED MICRO DEVICES, INC\.)" "$output_file" >/dev/null
