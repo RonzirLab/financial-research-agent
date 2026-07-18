@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -9,11 +10,13 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from financial_research_agent import sec_client as sec_module
+from financial_research_agent.sec import main as sec_main
 from financial_research_agent.sec_client import (
     COMPANY_TICKERS_URL,
     DEFAULT_CACHE_DIR,
     SEC_DATA_BASE_URL,
     SEC_USER_AGENT_EMAIL_ENV,
+    SUPPORTED_FORMS,
     Filing,
     SecClient,
     SecClientError,
@@ -68,7 +71,7 @@ class FakeResponse:
 class SecClientTest(unittest.TestCase):
     def test_get_cik_for_ticker_zero_pads_and_matches_case_insensitively(self) -> None:
         transport = FakeTransport(
-            {COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193}}}
+            {COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."}}}
         )
         client = SecClient(transport=transport)
 
@@ -79,8 +82,9 @@ class SecClientTest(unittest.TestCase):
         submissions_url = f"{SEC_DATA_BASE_URL}/submissions/CIK0000320193.json"
         transport = FakeTransport(
             {
-                COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193}},
+                COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."}},
                 submissions_url: {
+                    "cik": 320193,
                     "filings": {
                         "recent": {
                             "form": ["8-K", "10-Q", "10-Q"],
@@ -91,6 +95,7 @@ class SecClientTest(unittest.TestCase):
                             ],
                             "filingDate": ["2026-01-01", "2026-05-01", "2025-10-31"],
                             "primaryDocument": ["a.htm", "aapl-20260501.htm", "old.htm"],
+                            "reportDate": ["2025-12-31", "2026-03-31", "2025-09-30"],
                         }
                     }
                 },
@@ -109,6 +114,8 @@ class SecClientTest(unittest.TestCase):
                 accession_number="0000320193-26-000002",
                 filing_date="2026-05-01",
                 primary_document="aapl-20260501.htm",
+                report_date="2026-03-31",
+                company_name="Apple Inc.",
             ),
         )
         self.assertEqual(transport.json_urls, [COMPANY_TICKERS_URL, submissions_url])
@@ -117,7 +124,7 @@ class SecClientTest(unittest.TestCase):
         company_facts_url = f"{SEC_DATA_BASE_URL}/api/xbrl/companyfacts/CIK0000320193.json"
         transport = FakeTransport(
             {
-                COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193}},
+                COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."}},
                 company_facts_url: {"cik": 320193, "entityName": "Apple Inc."},
             }
         )
@@ -125,6 +132,57 @@ class SecClientTest(unittest.TestCase):
 
         self.assertEqual(client.get_company_facts("AAPL"), {"cik": 320193, "entityName": "Apple Inc."})
         self.assertEqual(transport.json_urls, [COMPANY_TICKERS_URL, company_facts_url])
+
+    def test_sec_provided_document_url_is_preferred_when_present(self) -> None:
+        submissions_url = f"{SEC_DATA_BASE_URL}/submissions/CIK0000320193.json"
+        official_url = "https://www.sec.gov/ixviewer/doc/action?doc=/Archives/example/aapl.htm"
+        transport = FakeTransport(
+            {
+                COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."}},
+                submissions_url: {
+                    "cik": 320193,
+                    "filings": {
+                        "recent": {
+                            "form": ["10-K"],
+                            "accessionNumber": ["0000320193-26-000123"],
+                            "filingDate": ["2026-10-31"],
+                            "reportDate": ["2026-09-26"],
+                            "primaryDocument": ["aapl-20260926.htm"],
+                            "primaryDocumentUrl": [official_url],
+                        }
+                    },
+                },
+            }
+        )
+        client = SecClient(transport=transport)
+
+        filing = client.get_latest_filing("AAPL", "10-K")
+
+        self.assertEqual(filing.official_document_url, official_url)
+        self.assertEqual(filing.download_url, official_url)
+        self.assertEqual(
+            filing.constructed_download_url,
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000123/aapl-20260926.htm",
+        )
+
+    def test_download_url_strips_cik_zeros_and_accession_dashes(self) -> None:
+        filing = Filing(
+            ticker="AMD",
+            cik="0000002488",
+            form="10-K",
+            accession_number="0000002488-26-000018",
+            filing_date="2026-02-04",
+            primary_document="amd-20251227.htm",
+            report_date="2025-12-27",
+            company_name="ADVANCED MICRO DEVICES INC",
+        )
+
+        self.assertEqual(filing.cik_without_leading_zeros, "2488")
+        self.assertEqual(filing.accession_without_dashes, "000000248826000018")
+        self.assertEqual(
+            filing.download_url,
+            "https://www.sec.gov/Archives/edgar/data/2488/000000248826000018/amd-20251227.htm",
+        )
 
     def test_download_filing_writes_under_output_dir(self) -> None:
         filing = Filing(
@@ -134,6 +192,8 @@ class SecClientTest(unittest.TestCase):
             accession_number="0000320193-25-000123",
             filing_date="2025-10-31",
             primary_document="aapl-20251031.htm",
+            report_date="2025-09-27",
+            company_name="Apple Inc.",
         )
         transport = FakeTransport(bytes_by_url={filing.download_url: b"filing contents"})
         client = SecClient(transport=transport)
@@ -141,9 +201,12 @@ class SecClientTest(unittest.TestCase):
         with self.subTest("tmp_path"):
             with tempfile.TemporaryDirectory() as temporary_directory:
                 path = client.download_filing(filing, Path(temporary_directory))
-                self.assertEqual(path.parent, Path(temporary_directory))
+                self.assertEqual(path.parent, Path(temporary_directory) / "AAPL" / "10-K" / "2025-10-31")
                 self.assertEqual(path.name, "AAPL_10-K_2025-10-31_0000320193-25-000123.htm")
                 self.assertEqual(path.read_bytes(), b"filing contents")
+                metadata = json.loads(path.with_name("metadata.json").read_text(encoding="utf-8"))
+                self.assertEqual(metadata["company_name"], "Apple Inc.")
+                self.assertEqual(metadata["source_url"], filing.download_url)
         self.assertEqual(transport.bytes_urls, [filing.download_url])
 
     def test_amd_download_flow_builds_official_sec_resources(self) -> None:
@@ -158,6 +221,7 @@ class SecClientTest(unittest.TestCase):
                     }
                 },
                 submissions_url: {
+                    "cik": 2488,
                     "filings": {
                         "recent": {
                             "form": ["8-K", "10-K", "10-Q"],
@@ -172,6 +236,7 @@ class SecClientTest(unittest.TestCase):
                                 "amd-20251227.htm",
                                 "amd-20250628.htm",
                             ],
+                            "reportDate": ["2026-01-15", "2025-12-27", "2025-06-28"],
                         }
                     }
                 },
@@ -219,6 +284,32 @@ class SecClientTest(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_supported_forms_include_8k(self) -> None:
+        self.assertEqual(SUPPORTED_FORMS, ("10-K", "10-Q", "8-K"))
+
+    def test_sec_download_cli_uses_mocked_client(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            with patch.dict("os.environ", {SEC_USER_AGENT_EMAIL_ENV: "YOUR_EMAIL@example.com"}, clear=True):
+                with patch("financial_research_agent.sec.SecClient") as client_class:
+                    client_class.return_value.download_latest_filing.return_value = (
+                        output / "AMD" / "10-K" / "2025-02-05" / "amd.htm"
+                    )
+                    exit_code = sec_main([
+                        "download",
+                        "--ticker",
+                        "AMD",
+                        "--form",
+                        "10-K",
+                        "--latest",
+                        "1",
+                        "--output",
+                        str(output),
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        client_class.return_value.download_latest_filing.assert_called_once_with("AMD", "10-K", output)
 
     def test_missing_ticker_raises_domain_error(self) -> None:
         transport = FakeTransport(
