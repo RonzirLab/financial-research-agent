@@ -13,6 +13,8 @@ from financial_research_agent.sec_client import (
     contact_email_from_env,
 )
 from financial_research_agent.sec_parser import SUPPORTED_PARSER_FORMS, write_section_outputs
+from financial_research_agent.llm_analyzer import analyze_sections_file
+from financial_research_agent.llm_provider import provider_details, provider_from_env
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     parse = subparsers.add_parser("parse", description="Parse a local 10-K or 10-Q filing into sections.")
     parse.add_argument("--filing", required=True, type=Path, help="Local SEC filing HTML file.")
     parse.add_argument("--form", required=True, choices=SUPPORTED_PARSER_FORMS, help="SEC filing form.")
+    analyze = subparsers.add_parser("analyze", description="Analyze selected sections from a local 10-K sections.json.")
+    analyze.add_argument("--sections", required=True, type=Path, help="Local sections.json produced by parse.")
+    analyze.add_argument("--output-dir", required=True, type=Path, help="Directory for analysis.json and analysis.md.")
+    analyze.add_argument("--model", help="OpenAI model; overrides OPENAI_MODEL and defaults to gpt-4o-mini.")
     download.add_argument(
         "--output",
         type=Path,
@@ -65,6 +71,22 @@ def main(argv: list[str] | None = None) -> int:
         try:
             json_path, markdown_path = write_section_outputs(args.filing, args.form)
         except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json_path)
+        print(markdown_path)
+        return 0
+
+    if args.command == "analyze":
+        try:
+            provider = provider_from_env(args.model)
+            provider_name, model = provider_details(provider)
+            print(f"LLM provider: {provider_name}")
+            if model:
+                print(f"LLM model: {model}")
+            json_path, markdown_path = analyze_sections_file(
+                args.sections, args.output_dir, provider
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
             parser.error(str(exc))
         print(json_path)
         print(markdown_path)
