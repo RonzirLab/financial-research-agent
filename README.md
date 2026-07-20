@@ -42,6 +42,21 @@ filing in a deterministic, accession-specific folder such as:
 data/sec/AMD/10-K/2025-02-05/0000002488-26-000018/
 ```
 
+## Parse 10-K and 10-Q sections
+
+Parse an already-downloaded local filing without making a network request:
+
+```bash
+uv run python -m financial_research_agent.sec parse \
+  --form 10-K \
+  --filing data/sec/AMD/10-K/2025-02-05/0000002488-26-000018/AMD_10-K_2025-02-05_0000002488-26-000018.htm
+```
+
+This writes `sections.json` and `sections.md` beside the filing. The JSON records
+each section's title, item identifier, readable text, start position, and character
+count. In the download workflow, enable the optional `parse` input to include these
+outputs for 10-K and 10-Q filings in the artifact.
+
 The older convenience CLI still downloads the latest annual and quarterly filings:
 
 ```bash

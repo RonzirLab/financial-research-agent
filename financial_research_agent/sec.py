@@ -12,6 +12,7 @@ from financial_research_agent.sec_client import (
     SecClientError,
     contact_email_from_env,
 )
+from financial_research_agent.sec_parser import SUPPORTED_PARSER_FORMS, write_section_outputs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Number of newest matching filings to download.",
     )
+    parse = subparsers.add_parser("parse", description="Parse a local 10-K or 10-Q filing into sections.")
+    parse.add_argument("--filing", required=True, type=Path, help="Local SEC filing HTML file.")
+    parse.add_argument("--form", required=True, choices=SUPPORTED_PARSER_FORMS, help="SEC filing form.")
     download.add_argument(
         "--output",
         type=Path,
@@ -55,6 +59,15 @@ def main(argv: list[str] | None = None) -> int:
         for path in paths:
             print(path)
             print(path.with_name("metadata.json"))
+        return 0
+
+    if args.command == "parse":
+        try:
+            json_path, markdown_path = write_section_outputs(args.filing, args.form)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json_path)
+        print(markdown_path)
         return 0
 
     parser.error(f"Unsupported command: {args.command}")
