@@ -201,7 +201,14 @@ class SecClientTest(unittest.TestCase):
         with self.subTest("tmp_path"):
             with tempfile.TemporaryDirectory() as temporary_directory:
                 path = client.download_filing(filing, Path(temporary_directory))
-                self.assertEqual(path.parent, Path(temporary_directory) / "AAPL" / "10-K" / "2025-10-31")
+                self.assertEqual(
+                    path.parent,
+                    Path(temporary_directory)
+                    / "AAPL"
+                    / "10-K"
+                    / "2025-10-31"
+                    / "0000320193-25-000123",
+                )
                 self.assertEqual(path.name, "AAPL_10-K_2025-10-31_0000320193-25-000123.htm")
                 self.assertEqual(path.read_bytes(), b"filing contents")
                 metadata = json.loads(path.with_name("metadata.json").read_text(encoding="utf-8"))
@@ -288,14 +295,70 @@ class SecClientTest(unittest.TestCase):
     def test_supported_forms_include_8k(self) -> None:
         self.assertEqual(SUPPORTED_FORMS, ("10-K", "10-Q", "8-K"))
 
-    def test_sec_download_cli_uses_mocked_client(self) -> None:
+    def test_download_latest_filings_sorts_and_downloads_one_filing(self) -> None:
+        submissions_url = f"{SEC_DATA_BASE_URL}/submissions/CIK0000320193.json"
+        older_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019325000003/older.htm"
+        newer_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000002/newer.htm"
+        transport = FakeTransport(
+            {
+                COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."}},
+                submissions_url: {"cik": 320193, "filings": {"recent": {
+                    "form": ["10-Q", "10-Q"],
+                    "accessionNumber": ["0000320193-25-000003", "0000320193-26-000002"],
+                    "filingDate": ["2025-10-31", "2026-05-01"],
+                    "primaryDocument": ["older.htm", "newer.htm"],
+                    "reportDate": ["2025-09-30", "2026-03-31"],
+                }}},
+            },
+            bytes_by_url={older_url: b"older", newer_url: b"newer"},
+        )
+        client = SecClient(transport=transport)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            paths = client.download_latest_filings("AAPL", "10-Q", Path(temporary_directory), limit=1)
+            self.assertEqual([path.read_bytes() for path in paths], [b"newer"])
+            self.assertTrue(paths[0].with_name("metadata.json").exists())
+
+        self.assertEqual(transport.bytes_urls, [newer_url])
+
+    def test_download_latest_filings_downloads_multiple_without_metadata_overwrite(self) -> None:
+        submissions_url = f"{SEC_DATA_BASE_URL}/submissions/CIK0000320193.json"
+        first_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/first.htm"
+        second_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000002/second.htm"
+        transport = FakeTransport(
+            {
+                COMPANY_TICKERS_URL: {"0": {"ticker": "AAPL", "cik_str": 320193, "title": "Apple Inc."}},
+                submissions_url: {"cik": 320193, "filings": {"recent": {
+                    "form": ["10-Q", "10-Q"],
+                    "accessionNumber": ["0000320193-26-000001", "0000320193-26-000002"],
+                    "filingDate": ["2026-05-01", "2026-05-01"],
+                    "primaryDocument": ["first.htm", "second.htm"],
+                    "reportDate": ["2026-03-31", "2026-03-31"],
+                }}},
+            },
+            bytes_by_url={first_url: b"first", second_url: b"second"},
+        )
+        client = SecClient(transport=transport)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            paths = client.download_latest_filings("AAPL", "10-Q", Path(temporary_directory), limit=2)
+            self.assertEqual([path.read_bytes() for path in paths], [b"first", b"second"])
+            self.assertNotEqual(paths[0].parent, paths[1].parent)
+            self.assertEqual(
+                [json.loads(path.with_name("metadata.json").read_text())["accession_number"] for path in paths],
+                ["0000320193-26-000001", "0000320193-26-000002"],
+            )
+
+        self.assertEqual(transport.bytes_urls, [first_url, second_url])
+
+    def test_sec_download_cli_uses_mocked_client_for_one_filing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
             with patch.dict("os.environ", {SEC_USER_AGENT_EMAIL_ENV: "YOUR_EMAIL@example.com"}, clear=True):
                 with patch("financial_research_agent.sec.SecClient") as client_class:
-                    client_class.return_value.download_latest_filing.return_value = (
-                        output / "AMD" / "10-K" / "2025-02-05" / "amd.htm"
-                    )
+                    client_class.return_value.download_latest_filings.return_value = [
+                        output / "AMD" / "10-K" / "2025-02-05" / "0001" / "amd.htm"
+                    ]
                     exit_code = sec_main([
                         "download",
                         "--ticker",
@@ -309,7 +372,27 @@ class SecClientTest(unittest.TestCase):
                     ])
 
         self.assertEqual(exit_code, 0)
-        client_class.return_value.download_latest_filing.assert_called_once_with("AMD", "10-K", output)
+        client_class.return_value.download_latest_filings.assert_called_once_with(
+            "AMD", "10-K", output, limit=1
+        )
+
+    def test_sec_download_cli_uses_mocked_client_for_multiple_filings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            with patch.dict("os.environ", {SEC_USER_AGENT_EMAIL_ENV: "YOUR_EMAIL@example.com"}, clear=True):
+                with patch("financial_research_agent.sec.SecClient") as client_class:
+                    client_class.return_value.download_latest_filings.return_value = [
+                        output / "AMD" / "8-K" / "2025-02-05" / "0001" / "first.htm",
+                        output / "AMD" / "8-K" / "2025-02-04" / "0002" / "second.htm",
+                    ]
+                    exit_code = sec_main([
+                        "download", "--ticker", "AMD", "--form", "8-K", "--latest", "2", "--output", str(output),
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        client_class.return_value.download_latest_filings.assert_called_once_with(
+            "AMD", "8-K", output, limit=2
+        )
 
     def test_missing_ticker_raises_domain_error(self) -> None:
         transport = FakeTransport(
