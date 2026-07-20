@@ -28,7 +28,7 @@ on:
         default: false
         type: boolean
       analyze:
-        description: Run the optional LLM analyzer for parsed 10-K filings (requires OPENAI_API_KEY secret)
+        description: Run an AMD 10-K analyzer smoke test after parsing; OpenAI is used when its secret is configured, otherwise mock is selected explicitly
         required: true
         default: false
         type: boolean
@@ -40,7 +40,6 @@ jobs:
       SEC_USER_AGENT_EMAIL: ${{ secrets.SEC_USER_AGENT_EMAIL }}
       SEC_USER_AGENT_NAME: ${{ secrets.SEC_USER_AGENT_NAME }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      LLM_PROVIDER: ${{ inputs.analyze && 'openai' || 'mock' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -67,23 +66,44 @@ jobs:
           find data/sec -type f \( -name '*.htm' -o -name '*.html' \) -exec \
             uv run python -m financial_research_agent.sec parse --form "${{ inputs.form }}" --filing {} \;
 
-      - name: Verify LLM analyzer credentials
+      - name: Smoke-test parsed 10-K sections with the selected LLM provider
         if: ${{ inputs.analyze && inputs.form == '10-K' }}
         run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "OPENAI_API_KEY repository secret is required when the analyze input is enabled." >&2
-            exit 1
+          set -euo pipefail
+          if [ -n "$OPENAI_API_KEY" ]; then
+            export LLM_PROVIDER=openai
+          else
+            export LLM_PROVIDER=mock
           fi
 
-      - name: Analyze parsed 10-K sections
-        if: ${{ inputs.analyze && inputs.form == '10-K' }}
-        run: |
+          echo "Selected LLM provider: $LLM_PROVIDER"
+          if [ "$LLM_PROVIDER" = "openai" ]; then
+            echo "Selected LLM model: ${OPENAI_MODEL:-gpt-4o-mini}"
+          else
+            echo "Selected LLM model: mock-v1"
+          fi
+
           find data/sec -type f -name sections.json -exec sh -c '\
             for sections_file; do \
               uv run python -m financial_research_agent.sec analyze \
                 --sections "$sections_file" \
                 --output-dir "$(dirname "$sections_file")"; \
             done' sh {} +
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          for analysis_path in sorted(Path("data/sec").rglob("analysis.json")):
+              usage = json.loads(analysis_path.read_text(encoding="utf-8")).get("usage", {})
+              print(f"Analysis artifact: {analysis_path}")
+              print(f"Provider: {os.environ['LLM_PROVIDER']}")
+              print(f"Model: {usage.get('model', 'unavailable')}")
+              print(f"Input tokens: {usage.get('input_tokens', 'unavailable')}")
+              print(f"Output tokens: {usage.get('output_tokens', 'unavailable')}")
+              print(f"Total tokens: {usage.get('total_tokens', 'unavailable')}")
+          PY
 
       - name: Upload downloaded filing
         uses: actions/upload-artifact@v4

@@ -102,8 +102,12 @@ provider reports them.
 
 `--model` can select an OpenAI model and defaults to `gpt-4o-mini`. The existing
 **SEC Filing Download** workflow has an `analyze` input. When enabled for a 10-K,
-it requires the `OPENAI_API_KEY` repository secret, analyzes parsed outputs, and
-uploads the raw HTML, parser outputs, and analysis outputs together.
+it parses the downloaded AMD sections, explicitly selects `openai` when the
+`OPENAI_API_KEY` repository secret exists (or explicitly selects `mock` when it
+does not), analyzes the parsed output, prints provider/model/token metadata, and
+uploads the raw HTML, parser outputs, and analysis outputs together. Selecting
+`LLM_PROVIDER=openai` without `OPENAI_API_KEY` still fails immediately in the
+CLI; it never falls back to mock.
 
 The older convenience CLI still downloads the latest annual and quarterly filings:
 
