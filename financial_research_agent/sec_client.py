@@ -291,7 +291,35 @@ class SecClient:
 
     def get_latest_filing(self, ticker: str, form: str) -> Filing:
         """Return metadata for the latest filing matching ``form`` for ``ticker``."""
-        return self.get_latest_filings(ticker, forms=(form,))[form]
+        return self.get_filings(ticker, form, limit=1)[0]
+
+    def get_filings(self, ticker: str, form: str, *, limit: int = 1) -> list[Filing]:
+        """Return up to ``limit`` newest filings matching one supported form.
+
+        SEC's submissions response is not relied on to be ordered; matching rows are
+        explicitly sorted by filing date in descending order before being limited.
+        """
+        if form not in SUPPORTED_FORMS:
+            raise ValueError(f"Unsupported form {form!r}; expected one of {SUPPORTED_FORMS}.")
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+
+        normalized_ticker = ticker.strip().upper()
+        company = self.get_company_for_ticker(normalized_ticker)
+        cik = company["cik"]
+        submissions = self._transport.get_json(f"{SEC_DATA_BASE_URL}/submissions/CIK{cik}.json")
+        filing_cik = str(submissions.get("cik", cik)).zfill(10)
+        recent = submissions.get("filings", {}).get("recent", {})
+
+        filings = [
+            _filing_from_recent_row(recent, index, normalized_ticker, filing_cik, company["company_name"])
+            for index, candidate_form in enumerate(recent.get("form", []))
+            if candidate_form == form
+        ]
+        filings.sort(key=lambda filing: filing.filing_date, reverse=True)
+        if not filings:
+            raise SecClientError(f"No recent filings found for {ticker}: {form}.")
+        return filings[:limit]
 
     def get_latest_filings(
         self,
@@ -313,25 +341,21 @@ class SecClient:
         recent = submissions.get("filings", {}).get("recent", {})
 
         recent_forms = recent.get("form", [])
-        accession_numbers = recent.get("accessionNumber", [])
-        filing_dates = recent.get("filingDate", [])
-        primary_documents = recent.get("primaryDocument", [])
-        report_dates = recent.get("reportDate", [])
 
-        filings: dict[str, Filing] = {}
+        filings_by_form: dict[str, list[Filing]] = {form: [] for form in forms}
         for index, candidate_form in enumerate(recent_forms):
-            if candidate_form in forms and candidate_form not in filings:
-                filings[candidate_form] = Filing(
-                    ticker=normalized_ticker,
-                    cik=filing_cik,
-                    form=candidate_form,
-                    accession_number=accession_numbers[index],
-                    filing_date=filing_dates[index],
-                    primary_document=primary_documents[index],
-                    report_date=report_dates[index] if index < len(report_dates) else "",
-                    company_name=company["company_name"],
-                    official_document_url=_get_recent_document_url(recent, index),
+            if candidate_form in filings_by_form:
+                filings_by_form[candidate_form].append(
+                    _filing_from_recent_row(
+                        recent, index, normalized_ticker, filing_cik, company["company_name"]
+                    )
                 )
+
+        filings = {
+            form: max(candidates, key=lambda filing: filing.filing_date)
+            for form, candidates in filings_by_form.items()
+            if candidates
+        }
 
         missing_forms = tuple(form for form in forms if form not in filings)
         if missing_forms:
@@ -340,7 +364,13 @@ class SecClient:
 
     def filing_output_dir(self, filing: Filing, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
         """Return the descriptive output directory for a filing."""
-        return output_dir / filing.ticker.upper() / filing.form / filing.filing_date
+        return (
+            output_dir
+            / filing.ticker.upper()
+            / filing.form
+            / filing.filing_date
+            / filing.accession_number
+        )
 
     def download_filing(self, filing: Filing, output_dir: Path = DEFAULT_OUTPUT_DIR) -> Path:
         """Download a filing document and return the path written."""
@@ -363,6 +393,20 @@ class SecClient:
     ) -> Path:
         """Download the latest filing for one supported form."""
         return self.download_filing(self.get_latest_filing(ticker, form), output_dir)
+
+    def download_latest_filings(
+        self,
+        ticker: str,
+        form: str,
+        output_dir: Path = DEFAULT_OUTPUT_DIR,
+        *,
+        limit: int = 1,
+    ) -> list[Path]:
+        """Download up to ``limit`` newest filings for one supported form."""
+        return [
+            self.download_filing(filing, output_dir)
+            for filing in self.get_filings(ticker, form, limit=limit)
+        ]
 
     def download_latest_annual_and_quarterly(
         self,
@@ -391,6 +435,28 @@ def _get_recent_document_url(recent: dict[str, Any], index: int) -> str | None:
             if candidate.startswith(("https://www.sec.gov/", "https://sec.gov/")):
                 return candidate
     return None
+
+
+def _filing_from_recent_row(
+    recent: dict[str, Any],
+    index: int,
+    ticker: str,
+    cik: str,
+    company_name: str,
+) -> Filing:
+    """Build a filing from a row in SEC's column-oriented recent filings data."""
+    report_dates = recent.get("reportDate", [])
+    return Filing(
+        ticker=ticker,
+        cik=cik,
+        form=recent["form"][index],
+        accession_number=recent["accessionNumber"][index],
+        filing_date=recent["filingDate"][index],
+        primary_document=recent["primaryDocument"][index],
+        report_date=report_dates[index] if index < len(report_dates) else "",
+        company_name=company_name,
+        official_document_url=_get_recent_document_url(recent, index),
+    )
 
 
 def _decode_response(body: bytes, content_encoding: str | None) -> bytes:
