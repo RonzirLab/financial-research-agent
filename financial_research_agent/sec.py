@@ -12,6 +12,7 @@ from financial_research_agent.sec_client import (
     SecClientError,
     contact_email_from_env,
 )
+from financial_research_agent.sec_parser import SUPPORTED_PARSER_FORMS, write_section_outputs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,15 +20,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Download SEC filings.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    download = subparsers.add_parser("download", description="Download the newest matching SEC filing.")
+    download = subparsers.add_parser("download", description="Download the newest matching SEC filings.")
     download.add_argument("--ticker", required=True, help="Ticker symbol, for example AMD.")
     download.add_argument("--form", required=True, choices=SUPPORTED_FORMS, help="SEC form to download.")
     download.add_argument(
         "--latest",
         type=int,
         default=1,
-        help="Number of newest matching filings to download. Currently only 1 is supported.",
+        help="Number of newest matching filings to download.",
     )
+    parse = subparsers.add_parser("parse", description="Parse a local 10-K or 10-Q filing into sections.")
+    parse.add_argument("--filing", required=True, type=Path, help="Local SEC filing HTML file.")
+    parse.add_argument("--form", required=True, choices=SUPPORTED_PARSER_FORMS, help="SEC filing form.")
     download.add_argument(
         "--output",
         type=Path,
@@ -43,15 +47,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "download":
-        if args.latest != 1:
-            parser.error("--latest currently supports only 1.")
         try:
             contact_email_from_env()
-            path = SecClient().download_latest_filing(args.ticker, args.form, args.output)
+            if args.latest < 1:
+                parser.error("--latest must be at least 1.")
+            paths = SecClient().download_latest_filings(
+                args.ticker, args.form, args.output, limit=args.latest
+            )
         except (ValueError, SecClientError) as exc:
             parser.error(str(exc))
-        print(path)
-        print(path.with_name("metadata.json"))
+        for path in paths:
+            print(path)
+            print(path.with_name("metadata.json"))
+        return 0
+
+    if args.command == "parse":
+        try:
+            json_path, markdown_path = write_section_outputs(args.filing, args.form)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json_path)
+        print(markdown_path)
         return 0
 
     parser.error(f"Unsupported command: {args.command}")

@@ -18,12 +18,15 @@ on:
           - 10-Q
           - 8-K
       latest:
-        description: Number of newest filings to download; currently only 1 is supported
+        description: Number of newest matching filings to download
         required: true
         default: '1'
-        type: choice
-        options:
-          - '1'
+        type: string
+      parse:
+        description: Parse downloaded 10-K or 10-Q filings into section outputs
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   download:
@@ -50,6 +53,12 @@ jobs:
             --form "${{ inputs.form }}" \
             --latest "${{ inputs.latest }}" \
             --output data/sec
+
+      - name: Parse downloaded filing sections
+        if: ${{ inputs.parse && inputs.form != '8-K' }}
+        run: |
+          find data/sec -type f \( -name '*.htm' -o -name '*.html' \) -exec \
+            uv run python -m financial_research_agent.sec parse --form "${{ inputs.form }}" --filing {} \;
 
       - name: Upload downloaded filing
         uses: actions/upload-artifact@v4

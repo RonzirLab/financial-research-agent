@@ -23,7 +23,7 @@ Do not commit personal contact information or secrets to the repository.
 
 ## Usage
 
-Download the newest supported filing for a ticker with the `sec download` command.
+Download the newest supported filings for a ticker with the `sec download` command.
 Supported forms are `10-K`, `10-Q`, and `8-K`.
 
 ```bash
@@ -35,12 +35,27 @@ uv run python -m financial_research_agent.sec download \
 ```
 
 The downloader resolves the ticker to a CIK, fetches the SEC submissions JSON,
-downloads the primary filing HTML, and writes `metadata.json` next to the filing in
-a descriptive folder such as:
+downloads each primary filing HTML, and writes a `metadata.json` beside every
+filing in a deterministic, accession-specific folder such as:
 
 ```text
-data/sec/AMD/10-K/2025-02-05/
+data/sec/AMD/10-K/2025-02-05/0000002488-26-000018/
 ```
+
+## Parse 10-K and 10-Q sections
+
+Parse an already-downloaded local filing without making a network request:
+
+```bash
+uv run python -m financial_research_agent.sec parse \
+  --form 10-K \
+  --filing data/sec/AMD/10-K/2025-02-05/0000002488-26-000018/AMD_10-K_2025-02-05_0000002488-26-000018.htm
+```
+
+This writes `sections.json` and `sections.md` beside the filing. The JSON records
+each section's title, item identifier, readable text, start position, and character
+count. In the download workflow, enable the optional `parse` input to include these
+outputs for 10-K and 10-Q filings in the artifact.
 
 The older convenience CLI still downloads the latest annual and quarterly filings:
 
@@ -55,7 +70,8 @@ uv run python -m financial_research_agent.cli AMD
 2. Open the **Actions** tab in GitHub.
 3. Select the **SEC Filing Download** workflow.
 4. Choose **Run workflow**.
-5. Enter a ticker, form (`10-K`, `10-Q`, or `8-K`), and `latest` value (`1`).
+5. Enter a ticker, form (`10-K`, `10-Q`, or `8-K`), and the number of newest
+   matching filings to download in `latest`.
 6. Download the `sec-filing-<ticker>-<form>` artifact from the completed workflow
    run to retrieve the filing HTML and metadata JSON.
 
