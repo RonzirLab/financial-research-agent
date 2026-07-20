@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Download latest SEC 10-K and 10-Q filings for a ticker."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "openai>=1.0.0",
+]
 
 [tool.uv]
 package = false

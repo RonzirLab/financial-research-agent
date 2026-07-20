@@ -23,7 +23,12 @@ on:
         default: '1'
         type: string
       parse:
-        description: Parse downloaded 10-K or 10-Q filings into section outputs
+        description: Parse downloaded 10-K or 10-Q filings into section outputs (always enabled when analyze is selected for 10-K)
+        required: true
+        default: false
+        type: boolean
+      analyze:
+        description: Run the optional LLM analyzer for parsed 10-K filings (requires OPENAI_API_KEY secret)
         required: true
         default: false
         type: boolean
@@ -34,6 +39,8 @@ jobs:
     env:
       SEC_USER_AGENT_EMAIL: ${{ secrets.SEC_USER_AGENT_EMAIL }}
       SEC_USER_AGENT_NAME: ${{ secrets.SEC_USER_AGENT_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LLM_PROVIDER: ${{ inputs.analyze && 'openai' || 'mock' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -55,10 +62,28 @@ jobs:
             --output data/sec
 
       - name: Parse downloaded filing sections
-        if: ${{ inputs.parse && inputs.form != '8-K' }}
+        if: ${{ (inputs.parse || (inputs.analyze && inputs.form == '10-K')) && inputs.form != '8-K' }}
         run: |
           find data/sec -type f \( -name '*.htm' -o -name '*.html' \) -exec \
             uv run python -m financial_research_agent.sec parse --form "${{ inputs.form }}" --filing {} \;
+
+      - name: Verify LLM analyzer credentials
+        if: ${{ inputs.analyze && inputs.form == '10-K' }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY repository secret is required when the analyze input is enabled." >&2
+            exit 1
+          fi
+
+      - name: Analyze parsed 10-K sections
+        if: ${{ inputs.analyze && inputs.form == '10-K' }}
+        run: |
+          find data/sec -type f -name sections.json -exec sh -c '\
+            for sections_file; do \
+              uv run python -m financial_research_agent.sec analyze \
+                --sections "$sections_file" \
+                --output-dir "$(dirname "$sections_file")"; \
+            done' sh {} +
 
       - name: Upload downloaded filing
         uses: actions/upload-artifact@v4
